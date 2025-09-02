@@ -36,6 +36,10 @@ def run(
     y, t = [], time.time()
     device = select_device(device)
     model_type = type(attempt_load(weights, fuse=False))  # DetectionModel, SegmentationModel, etc.
+
+    ##-- jgcha
+    pre_list, inf_list, nms_list = [], [], []
+
     for i, (name, f, suffix, cpu, gpu) in export.export_formats().iterrows():  # index, (name, file, suffix, CPU, GPU)
         try:
             assert i not in (9, 10), 'inference not supported'  # Edge TPU and TF.js are unsupported
@@ -54,34 +58,82 @@ def run(
 
             # Validate
             if model_type == SegmentationModel:
-                result = val_seg(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
-                metric = result[0][7]  # (box(p, r, map50, map), mask(p, r, map50, map), *loss(box, obj, cls))
+                #result = val_seg(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
+                
+                ##-- jgcha
+                results, maps, times, raw_times = val_seg(
+                    data, w, batch_size, imgsz,
+                    plots=False, device=device, task='speed', half=half, return_raw=True
+                )
+                metric = results[0][7]  # segmentation metric
+                speed = times[1]
+                #y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])
+
+                pre_list += raw_times["pre"]
+                inf_list += raw_times["inf"]
+                nms_list += raw_times["nms"]
+
+                #metric = result[0][7]  # (box(p, r, map50, map), mask(p, r, map50, map), *loss(box, obj, cls))
             else:  # DetectionModel:
-                result = val_det(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
-                metric = result[0][3]  # (p, r, map50, map, *loss(box, obj, cls))
-            speed = result[2][1]  # times (preprocess, inference, postprocess)
+                #result = val_det(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
+                
+                ##-- jgcha
+                results, maps, times, raw_times = val_det(
+                    data, w, batch_size, imgsz,
+                    plots=False, device=device, task='speed', half=half, return_raw=True
+                )
+
+                metric = results[3]     # (p, r, map50, map)
+                speed = times[1]        # 평균 inference ms
+                #y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])
+
+                # ✅ per-image latency 리스트 모으기
+                pre_list += raw_times["pre"]
+                inf_list += raw_times["inf"]
+                nms_list += raw_times["nms"]
+
+                #metric = result[0][3]  # (p, r, map50, map, *loss(box, obj, cls))
+            
+            ##-- jgcha
+            speed = times[1]  # 평균 inference ms
+
+            #speed = result[2][1]  # times (preprocess, inference, postprocess)
             y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])  # MB, mAP, t_inference
+
         except Exception as e:
             if hard_fail:
                 assert type(e) is AssertionError, f'Benchmark --hard-fail for {name}: {e}'
             LOGGER.warning(f'WARNING ⚠️ Benchmark failure for {name}: {e}')
             y.append([name, None, None, None])  # mAP, t_inference
+        
         if pt_only and i == 0:
+        #if pt_only == 0:
             break  # break after PyTorch
 
     # Print results
     LOGGER.info('\n')
-    parse_opt()
+    
+    ##-- jgcha
+    # parse_opt()
+
     notebook_init()  # print system info
     c = ['Format', 'Size (MB)', 'mAP50-95', 'Inference time (ms)'] if map else ['Format', 'Export', '', '']
     py = pd.DataFrame(y, columns=c)
     LOGGER.info(f'\nBenchmarks complete ({time.time() - t:.2f}s)')
-    LOGGER.info(str(py if map else py.iloc[:, :2]))
-    if hard_fail and isinstance(hard_fail, str):
-        metrics = py['mAP50-95'].array  # values to compare to floor
-        floor = eval(hard_fail)  # minimum metric floor to pass
-        assert all(x > floor for x in metrics if pd.notna(x)), f'HARD FAIL: mAP50-95 < floor {floor}'
-    return py
+    
+    ##-- jgcha
+    LOGGER.info(str(py))
+
+    # ✅ 최종 리턴: Warboy 포맷에서 쓰기 위한 per-image 리스트
+    return pre_list, inf_list, nms_list   
+
+    #LOGGER.info(str(py if map else py.iloc[:, :2]))
+    #
+    #if hard_fail and isinstance(hard_fail, str):
+    #    metrics = py['mAP50-95'].array  # values to compare to floor
+    #    floor = eval(hard_fail)  # minimum metric floor to pass
+    #    assert all(x > floor for x in metrics if pd.notna(x)), f'HARD FAIL: mAP50-95 < floor {floor}'
+    #return py
 
 
 def test(
