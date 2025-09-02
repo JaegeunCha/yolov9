@@ -104,6 +104,9 @@ def run(
         plots=True,
         callbacks=Callbacks(),
         compute_loss=None,
+        
+        ##-- jgcha
+        return_raw=False    # ✅ raw latency 반환 여부
 ):
     # Initialize/load model and set device
     training = model is not None
@@ -160,7 +163,9 @@ def run(
                                        pad=pad,
                                        rect=rect,
                                        workers=workers,
-                                       min_items=opt.min_items,
+                                       ##-- jgcha
+                                       min_items=min_items,
+                                       #min_items=opt.min_items,
                                        prefix=colorstr(f'{task}: '))[0]
 
     seen = 0
@@ -176,6 +181,10 @@ def run(
     jdict, stats, ap, ap_class = [], [], [], []
     callbacks.run('on_val_start')
     pbar = tqdm(dataloader, desc=s, bar_format=TQDM_BAR_FORMAT)  # progress bar
+
+    ##-- jgcha
+    pre_ms_list, inf_ms_list, nms_ms_list = [], [], []
+
     for batch_i, (im, targets, paths, shapes) in enumerate(pbar):
         callbacks.run('on_val_batch_start')
         with dt[0]:
@@ -205,6 +214,14 @@ def run(
                                         multi_label=True,
                                         agnostic=single_cls,
                                         max_det=max_det)
+
+        ##-- jgcha
+        pre_ms = dt[0].dt * 1E3 / nb
+        inf_ms = dt[1].dt * 1E3 / nb
+        nms_ms = dt[2].dt * 1E3 / nb
+        pre_ms_list.extend([pre_ms] * nb)
+        inf_ms_list.extend([inf_ms] * nb)
+        nms_ms_list.extend([nms_ms] * nb)
 
         # Metrics
         for si, pred in enumerate(preds):
@@ -315,7 +332,14 @@ def run(
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    
+    ##-- jgcha
+    results = (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist())
+    if return_raw:
+        return results, maps, t, {"pre": pre_ms_list, "inf": inf_ms_list, "nms": nms_ms_list}
+    return results, maps, t
+    
+    #return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
 
 def parse_opt():
