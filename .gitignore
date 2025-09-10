@@ -1,0 +1,4 @@
+./runs/val
+./runs/val/* 
+*.log
+runs/val/
