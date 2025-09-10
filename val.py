@@ -336,7 +336,11 @@ def run(
     ##-- jgcha
     results = (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist())
     if return_raw:
-        return results, maps, t, {"pre": pre_ms_list, "inf": inf_ms_list, "nms": nms_ms_list}
+        return results, maps, t, {
+            "lat_pre": pre_ms_list,
+            "lat_infer": inf_ms_list,
+            "lat_post": nms_ms_list
+        }
     return results, maps, t
     
     #return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t

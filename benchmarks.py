@@ -22,6 +22,25 @@ from utils.torch_utils import select_device
 from val import run as val_det
 
 
+def _validate_model(model_type, data, w, batch_size, imgsz, device, half):
+    """Segmentation vs Detection 공통 벤치마크 함수"""
+    if model_type == SegmentationModel:
+        results, maps, times, raw_times = val_seg(
+            data, w, batch_size, imgsz,
+            plots=False, device=device, task='speed', half=half, return_raw=True
+        )
+        metric = results[0][7]  # segmentation metric
+    else:
+        results, maps, times, raw_times = val_det(
+            data, w, batch_size, imgsz,
+            plots=False, device=device, task='speed', half=half, return_raw=True
+        )
+        metric = results[3]  # detection metric
+
+    speed = times[1]
+    return metric, speed, raw_times
+
+
 def run(
         weights=ROOT / 'yolo.pt',  # weights path
         imgsz=640,  # inference size (pixels)
@@ -37,103 +56,57 @@ def run(
     device = select_device(device)
     model_type = type(attempt_load(weights, fuse=False))  # DetectionModel, SegmentationModel, etc.
 
-    ##-- jgcha
     pre_list, inf_list, nms_list = [], [], []
 
-    for i, (name, f, suffix, cpu, gpu) in export.export_formats().iterrows():  # index, (name, file, suffix, CPU, GPU)
+    for i, (name, f, suffix, cpu, gpu) in export.export_formats().iterrows():
         try:
-            assert i not in (9, 10), 'inference not supported'  # Edge TPU and TF.js are unsupported
-            assert i != 5 or platform.system() == 'Darwin', 'inference only supported on macOS>=10.13'  # CoreML
+            # 지원 조건 체크
+            assert i not in (9, 10), 'inference not supported'  # Edge TPU, TF.js
+            assert i != 5 or platform.system() == 'Darwin', 'CoreML only on macOS>=10.13'
             if 'cpu' in device.type:
-                assert cpu, 'inference not supported on CPU'
+                assert cpu, 'not supported on CPU'
             if 'cuda' in device.type:
-                assert gpu, 'inference not supported on GPU'
+                assert gpu, 'not supported on GPU'
 
             # Export
-            if f == '-':
-                w = weights  # PyTorch format
-            else:
-                w = export.run(weights=weights, imgsz=[imgsz], include=[f], device=device, half=half)[-1]  # all others
+            w = weights if f == '-' else export.run(
+                weights=weights, imgsz=[imgsz], include=[f], device=device, half=half
+            )[-1]
             assert suffix in str(w), 'export failed'
 
             # Validate
-            if model_type == SegmentationModel:
-                #result = val_seg(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
-                
-                ##-- jgcha
-                results, maps, times, raw_times = val_seg(
-                    data, w, batch_size, imgsz,
-                    plots=False, device=device, task='speed', half=half, return_raw=True
-                )
-                metric = results[0][7]  # segmentation metric
-                speed = times[1]
-                #y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])
+            metric, speed, raw_times = _validate_model(model_type, data, w, batch_size, imgsz, device, half)
 
-                pre_list += raw_times["pre"]
-                inf_list += raw_times["inf"]
-                nms_list += raw_times["nms"]
+            # per-image latency 리스트 모으기
+            pre_list += raw_times["pre"]
+            inf_list += raw_times["inf"]
+            nms_list += raw_times["nms"]
 
-                #metric = result[0][7]  # (box(p, r, map50, map), mask(p, r, map50, map), *loss(box, obj, cls))
-            else:  # DetectionModel:
-                #result = val_det(data, w, batch_size, imgsz, plots=False, device=device, task='speed', half=half)
-                
-                ##-- jgcha
-                results, maps, times, raw_times = val_det(
-                    data, w, batch_size, imgsz,
-                    plots=False, device=device, task='speed', half=half, return_raw=True
-                )
-
-                metric = results[3]     # (p, r, map50, map)
-                speed = times[1]        # 평균 inference ms
-                #y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])
-
-                # ✅ per-image latency 리스트 모으기
-                pre_list += raw_times["pre"]
-                inf_list += raw_times["inf"]
-                nms_list += raw_times["nms"]
-
-                #metric = result[0][3]  # (p, r, map50, map, *loss(box, obj, cls))
-            
-            ##-- jgcha
-            speed = times[1]  # 평균 inference ms
-
-            #speed = result[2][1]  # times (preprocess, inference, postprocess)
-            y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])  # MB, mAP, t_inference
+            y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])
 
         except Exception as e:
             if hard_fail:
-                assert type(e) is AssertionError, f'Benchmark --hard-fail for {name}: {e}'
+                assert isinstance(e, AssertionError), f'Benchmark --hard-fail for {name}: {e}'
             LOGGER.warning(f'WARNING ⚠️ Benchmark failure for {name}: {e}')
-            y.append([name, None, None, None])  # mAP, t_inference
-        
+            y.append([name, None, None, None])
+
         if pt_only and i == 0:
-        #if pt_only == 0:
             break  # break after PyTorch
 
     # Print results
     LOGGER.info('\n')
-    
-    ##-- jgcha
-    # parse_opt()
-
-    notebook_init()  # print system info
-    c = ['Format', 'Size (MB)', 'mAP50-95', 'Inference time (ms)'] if map else ['Format', 'Export', '', '']
+    notebook_init()
+    c = ['Format', 'Size (MB)', 'mAP50-95', 'Inference time (ms)']
     py = pd.DataFrame(y, columns=c)
     LOGGER.info(f'\nBenchmarks complete ({time.time() - t:.2f}s)')
-    
-    ##-- jgcha
     LOGGER.info(str(py))
 
-    # ✅ 최종 리턴: Warboy 포맷에서 쓰기 위한 per-image 리스트
-    return pre_list, inf_list, nms_list   
-
-    #LOGGER.info(str(py if map else py.iloc[:, :2]))
-    #
-    #if hard_fail and isinstance(hard_fail, str):
-    #    metrics = py['mAP50-95'].array  # values to compare to floor
-    #    floor = eval(hard_fail)  # minimum metric floor to pass
-    #    assert all(x > floor for x in metrics if pd.notna(x)), f'HARD FAIL: mAP50-95 < floor {floor}'
-    #return py
+    # 최종 리턴: per-image latency
+    return {
+        "lat_pre": raw_times["pre"],
+        "lat_infer": raw_times["inf"],
+        "lat_post": raw_times["nms"]
+    }
 
 
 def test(
