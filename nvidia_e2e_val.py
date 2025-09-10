@@ -96,7 +96,7 @@ def run_e2e(opt):
     start = time.time()
 
     # 1) 마이크로 벤치(프리/인퍼/포스트 ms 리스트)
-    pre_ms_list, inf_ms_list, nms_ms_list = bench_run(
+    lat_dict = bench_run(
         data=opt.data,
         weights=opt.weights,
         batch_size=opt.batch,
@@ -105,7 +105,7 @@ def run_e2e(opt):
         pt_only=True,
         half=opt.half,
     )
-    e2e_ms_list = [p + i + n for p, i, n in zip(pre_ms_list, inf_ms_list, nms_ms_list)]
+    e2e_ms_list = [p + i + n for p, i, n in zip(lat_dict["lat_pre"], lat_dict["lat_infer"], lat_dict["lat_post"])]
 
     # 2) 정확도(mAP) 측정
     results, maps, _ = val_run(
@@ -121,55 +121,60 @@ def run_e2e(opt):
         half=opt.half,
     )
 
-    mAP50_95 = results[3]
+    mAP = results[3]
     model_name = Path(opt.weights).stem.replace("-converted", "").replace("-", "")
     target = TARGET_ACCURACY.get(model_name, 0.3) * 0.9
-    acc_check = "success" if mAP50_95 >= target else "fail"
+    acc_check = "success" if mAP >= target else "fail"
 
     # 3) 집계
-    sec = time.time() - start
-    images = len(pre_ms_list)
-    overall_wall = images / sec if sec > 0 else None  # 데이터셋 전체 처리율(표에는 미노출)
+    #sec = time.time() - start
+    #images = len(pre_ms_list)
+    #overall_wall = images / sec if sec > 0 else None  # 데이터셋 전체 처리율(표에는 미노출)
 
     e2e_q = quantiles(e2e_ms_list)
-    inf_q = quantiles(inf_ms_list)
-    pre_q = quantiles(pre_ms_list)
-    post_q = quantiles(nms_ms_list)
+    pre_q = quantiles(lat_dict["lat_pre"])
+    inf_q = quantiles(lat_dict["lat_infer"])
+    post_q = quantiles(lat_dict["lat_post"])
 
-    # per-image throughput들
-    e2e_imgps = 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None
-    infer_imgps = 1000.0 / inf_q["avg"] if inf_q["avg"] else None
+    ## per-image throughput들
+    #e2e_imgps = 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None
+    #infer_imgps = 1000.0 / inf_q["avg"] if inf_q["avg"] else None
 
     summary = {
-        "model": model_name,
-        "batch": opt.batch,
-        "weights": str(opt.weights),
-        "device": opt.device,
-        "images": images,
-        "throughput_img_per_s": {
-            # 표의 1열로 사용 (현재는 e2e_active와 동일)
-            "e2e_wall_per_image": e2e_imgps,
-            # 유지(이름 호환)
-            "e2e": e2e_imgps,
-            "infer_only": infer_imgps,
-            # 참조용(표에는 미노출)
-            "overall_wall": overall_wall,
-        },
-        "latency_ms": {
-            "pre": pre_q,
-            "infer": inf_q,
-            "post": post_q,
-            "e2e_active": e2e_q,
-        },
-        "accuracy": {
-            "mAP50_95": mAP50_95,
-            "target": target,
-            "check": acc_check,
-        },
+    "model": model_name,
+    "images": len(lat_dict["lat_pre"]),
+    "throughput_img_per_s": {
+        "e2e_wall_per_image": 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None,
+        "e2e_active": 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None,
+        "infer_only": 1000.0 / inf_q["avg"] if inf_q["avg"] else None
+    },
+    "latency_ms": {
+        "pre": pre_q,
+        "infer": inf_q,
+        "post": post_q,
+        "e2e_active": e2e_q,
+    },
+    "metrics": {
+        "mAP": mAP,
+        "target": target,
+        "status": status,
+        "conf_thres": opt.conf,
+        "iou_thres": opt.iou,
         "sec": sec,
-        "conf": opt.conf,
-        "iou": opt.iou,
     }
+    }
+
+    print(
+    f"RESULT {model_name} bs={opt.batch} | "
+    f"e2e_wall_imgps={summary['throughput_img_per_s']['e2e_wall_per_image']} "
+    f"e2e_active={summary['throughput_img_per_s']['e2e_active']} "
+    f"infer_only={summary['throughput_img_per_s']['infer_only']} | "
+    f"lat_pre_avg={summary['latency_ms']['pre']['avg']} "
+    f"lat_infer_avg={summary['latency_ms']['infer']['avg']} "
+    f"lat_post_avg={summary['latency_ms']['post']['avg']} | "
+    f"mAP={mAP} target={target} status={status} | "
+    f"conf={opt.conf} iou={opt.iou} sec={sec:.2f}"
+    )
 
     # 콘솔에도 JSON 한 번 출력(디버깅 가독성)
     print(json.dumps(summary, indent=2))
@@ -193,12 +198,12 @@ def summarize_by_model(model: str, by_bs: Dict[int, dict]) -> str:
         r = by_bs[bs]
         thr = r["throughput_img_per_s"]
         lat = r["latency_ms"]
-        acc = r["accuracy"]
+        acc = r["metrics"]
         table.append(
             f"| {bs} | {fmt(thr.get('e2e_wall_per_image'))} | "
             f"{fmt(thr.get('e2e'))} | {fmt(thr.get('infer_only'))} | "
             f"{fmt(lat['pre']['avg'])} | {fmt(lat['infer']['avg'])} | {fmt(lat['post']['avg'])} | "
-            f"{fmt(acc['mAP50_95'])} | {fmt(acc['target'])} | {acc['check']} | {fmt(r['sec'])} |"
+            f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
         )
     return "\n".join([header, ""] + table + [""])
 
@@ -220,12 +225,12 @@ def summarize_by_batch(batch: int, all_results: Dict[str, Dict[int, dict]]) -> s
         r = bs_dict[batch]
         thr = r["throughput_img_per_s"]
         lat = r["latency_ms"]
-        acc = r["accuracy"]
+        acc = r["metrics"]
         table.append(
             f"| {model} | {fmt(thr.get('e2e_wall_per_image'))} | "
             f"{fmt(thr.get('e2e'))} | {fmt(thr.get('infer_only'))} | "
             f"{fmt(lat['pre']['avg'])} | {fmt(lat['infer']['avg'])} | {fmt(lat['post']['avg'])} | "
-            f"{fmt(acc['mAP50_95'])} | {fmt(acc['target'])} | {acc['check']} | {fmt(r['sec'])} |"
+            f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
         )
     return "\n".join([header, ""] + table + [""])
 
@@ -255,11 +260,11 @@ def extract_metric_value(res: dict, metric: str):
     elif metric == "lat_post":
         return lat.get("post", {}).get("avg")
     elif metric == "mAP":
-        return acc.get("mAP50_95") or acc.get("mAP")
+        return acc.get("mAP")
     elif metric == "Target":
         return acc.get("target")
     elif metric == "Status":
-        return acc.get("check") or acc.get("status")
+        return acc.get("status")
     elif metric == "conf":
         return res.get("conf")
     elif metric == "iou":
@@ -387,8 +392,7 @@ def main():
                 rf.write("=" * 80 + "\n")
         except Exception:
             pass
-        print()
-
+        
         for w in weights:
             model_name = w.stem
             log_line(f"PROCESS MODEL: {model_name}")
