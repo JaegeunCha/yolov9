@@ -35,6 +35,7 @@ RESULT_LOG_FILE = REPO_ROOT / f"nvidia_result_{START_TS}.log"
 
 # 원하는 배치 조합으로 수정 가능
 BATCH_SIZES = [1, 4, 8, 16, 32]
+#BATCH_SIZES = [1]
 
 TARGET_ACCURACY = {
     "yolov9t": 0.383,
@@ -45,6 +46,23 @@ TARGET_ACCURACY = {
     "yolov8n": 0.373,
     "yolov8l": 0.529,
 }
+
+# -----------------------------
+# Metric Definitions
+# -----------------------------
+TRANSPOSED_METRICS = [
+    #("e2e_wall_per_image", "e2e_wall (img/s)"),
+    ("e2e_active", "e2e_active (img/s)"),
+    ("infer_only", "infer_only (img/s)"),
+    ("lat_pre", "lat_pre (ms)"),
+    ("lat_infer", "lat_infer (ms)"),
+    ("lat_post", "lat_post (ms)"),
+    ("mAP", "mAP"),
+    ("Target", "Target"),
+    ("Status", "Status"),
+    ("sec", "sec (s)"),
+]
+
 
 # -----------------------------
 # Logging helpers
@@ -126,54 +144,53 @@ def run_e2e(opt):
     target = TARGET_ACCURACY.get(model_name, 0.3) * 0.9
     acc_check = "success" if mAP >= target else "fail"
 
-    # 3) 집계
-    #sec = time.time() - start
-    #images = len(pre_ms_list)
-    #overall_wall = images / sec if sec > 0 else None  # 데이터셋 전체 처리율(표에는 미노출)
-
     e2e_q = quantiles(e2e_ms_list)
+    #wall_elapsed = time.time() - start
+    #num_images = len(lat_dict["lat_pre"])
+    #e2e_wall_imgps = num_images / wall_elapsed if wall_elapsed > 0 else None
+
     pre_q = quantiles(lat_dict["lat_pre"])
     inf_q = quantiles(lat_dict["lat_infer"])
     post_q = quantiles(lat_dict["lat_post"])
 
-    ## per-image throughput들
-    #e2e_imgps = 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None
-    #infer_imgps = 1000.0 / inf_q["avg"] if inf_q["avg"] else None
+    acc_check = "success" if mAP >= target else "fail"
 
     summary = {
-    "model": model_name,
-    "images": len(lat_dict["lat_pre"]),
-    "throughput_img_per_s": {
-        "e2e_wall_per_image": 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None,
-        "e2e_active": 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None,
-        "infer_only": 1000.0 / inf_q["avg"] if inf_q["avg"] else None
-    },
-    "latency_ms": {
-        "pre": pre_q,
-        "infer": inf_q,
-        "post": post_q,
-        "e2e_active": e2e_q,
-    },
-    "metrics": {
-        "mAP": mAP,
-        "target": target,
-        "status": status,
-        "conf_thres": opt.conf,
-        "iou_thres": opt.iou,
-        "sec": sec,
-    }
+        "model": model_name,
+        "images": len(lat_dict["lat_pre"]),
+        "throughput_img_per_s": {
+            #"e2e_wall_per_image": e2e_wall_imgps,
+            "e2e_active": 1000.0 / e2e_q["avg"] if e2e_q["avg"] else None,
+            "infer_only": 1000.0 / inf_q["avg"] if inf_q["avg"] else None
+        },
+        "latency_ms": {
+            "pre": pre_q,
+            "infer": inf_q,
+            "post": post_q,
+            "e2e_active": e2e_q,
+        },
+        "metrics": {
+            "mAP": mAP,
+            "target": target,
+            "status": acc_check,
+            "conf_thres": opt.conf,
+            "iou_thres": opt.iou,
+            "sec": time.time() - start,
+        }
     }
 
     print(
-    f"RESULT {model_name} bs={opt.batch} | "
-    f"e2e_wall_imgps={summary['throughput_img_per_s']['e2e_wall_per_image']} "
-    f"e2e_active={summary['throughput_img_per_s']['e2e_active']} "
-    f"infer_only={summary['throughput_img_per_s']['infer_only']} | "
-    f"lat_pre_avg={summary['latency_ms']['pre']['avg']} "
-    f"lat_infer_avg={summary['latency_ms']['infer']['avg']} "
-    f"lat_post_avg={summary['latency_ms']['post']['avg']} | "
-    f"mAP={mAP} target={target} status={status} | "
-    f"conf={opt.conf} iou={opt.iou} sec={sec:.2f}"
+        f"RESULT {model_name} bs={opt.batch} | "
+        #f"e2e_wall_imgps={summary['throughput_img_per_s']['e2e_wall_per_image']} "        
+        f"e2e_active={summary['throughput_img_per_s']['e2e_active']} "
+        f"infer_only={summary['throughput_img_per_s']['infer_only']} | "
+        f"lat_pre_avg={summary['latency_ms']['pre']['avg']} "
+        f"lat_infer_avg={summary['latency_ms']['infer']['avg']} "
+        f"lat_post_avg={summary['latency_ms']['post']['avg']} | "
+        f"mAP={summary['metrics']['mAP']} target={summary['metrics']['target']} "
+        f"status={summary['metrics']['status']} | "
+        f"conf={summary['metrics']['conf_thres']} iou={summary['metrics']['iou_thres']} "
+        f"sec={summary['metrics']['sec']:.2f}"
     )
 
     # 콘솔에도 JSON 한 번 출력(디버깅 가독성)
@@ -188,11 +205,13 @@ def fmt(x):
 
 def summarize_by_model(model: str, by_bs: Dict[int, dict]) -> str:
     first = next(iter(by_bs.values()))
-    conf, iou = fmt(first["conf"]), fmt(first["iou"])
+    conf = fmt(first["metrics"].get("conf_thres"))
+    iou = fmt(first["metrics"].get("iou_thres"))
     header = f"[model : {model}] : conf ({conf}), iou ({iou})"
     table = [
-        "| batch_size | e2e_wall_per_image | e2e_active | infer_only | lat_pre | lat_infer | lat_post | mAP | Target | Status | sec |",
-        "|------------|---------------------|------------|------------|---------|-----------|----------|-----|--------|--------|-----|",
+        #"| batch_size | e2e_wall_per_image (img/s) | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
+        "| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
+        "|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|---------|",
     ]
     for bs in sorted(by_bs.keys()):
         r = by_bs[bs]
@@ -200,8 +219,9 @@ def summarize_by_model(model: str, by_bs: Dict[int, dict]) -> str:
         lat = r["latency_ms"]
         acc = r["metrics"]
         table.append(
-            f"| {bs} | {fmt(thr.get('e2e_wall_per_image'))} | "
-            f"{fmt(thr.get('e2e'))} | {fmt(thr.get('infer_only'))} | "
+            #f"| {bs} | {fmt(thr.get('e2e_wall_per_image'))} | "
+            f"| {bs} | "
+            f"{fmt(thr.get('e2e_active'))} | {fmt(thr.get('infer_only'))} | "
             f"{fmt(lat['pre']['avg'])} | {fmt(lat['infer']['avg'])} | {fmt(lat['post']['avg'])} | "
             f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
         )
@@ -211,13 +231,17 @@ def summarize_by_model(model: str, by_bs: Dict[int, dict]) -> str:
 def summarize_by_batch(batch: int, all_results: Dict[str, Dict[int, dict]]) -> str:
     first_model = next(iter(all_results.values()))
     first_res = first_model.get(batch, {})
-    conf_val = fmt(first_res.get("conf")) if first_res else "NA"
-    iou_val = fmt(first_res.get("iou")) if first_res else "NA"
+    if first_res:
+        conf_val = fmt(first_res["metrics"].get("conf_thres"))
+        iou_val  = fmt(first_res["metrics"].get("iou_thres"))
+    else:
+        conf_val, iou_val = "NA", "NA"
 
     header = f"[batch_size : {batch}] : conf ({conf_val}), iou ({iou_val})"
     table = [
-        "| model | e2e_wall_per_image | e2e_active | infer_only | lat_pre | lat_infer | lat_post | mAP | Target | Status | sec |",
-        "|-------|---------------------|------------|------------|---------|-----------|----------|-----|--------|--------|-----|",
+        #"| batch_size | e2e_wall_per_image (img/s) | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
+        "| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
+        "|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|---------|",
     ]
     for model, bs_dict in all_results.items():
         if batch not in bs_dict:
@@ -227,8 +251,9 @@ def summarize_by_batch(batch: int, all_results: Dict[str, Dict[int, dict]]) -> s
         lat = r["latency_ms"]
         acc = r["metrics"]
         table.append(
-            f"| {model} | {fmt(thr.get('e2e_wall_per_image'))} | "
-            f"{fmt(thr.get('e2e'))} | {fmt(thr.get('infer_only'))} | "
+            #f"| {model} | {fmt(thr.get('e2e_wall_per_image'))} | "
+            f"| {model} | "
+            f"{fmt(thr.get('e2e_active'))} | {fmt(thr.get('infer_only'))} | "
             f"{fmt(lat['pre']['avg'])} | {fmt(lat['infer']['avg'])} | {fmt(lat['post']['avg'])} | "
             f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
         )
@@ -236,20 +261,22 @@ def summarize_by_batch(batch: int, all_results: Dict[str, Dict[int, dict]]) -> s
 
 
 def get_conf_iou(res: dict) -> tuple[str, str]:
+    """metrics 블록에서 conf/iou 추출"""
     def fmt(x): return "NA" if x is None else f"{x:.3f}"
-    return fmt(res.get("conf")), fmt(res.get("iou"))
-
+    m = res.get("metrics", {}) if res else {}
+    return fmt(m.get("conf_thres")), fmt(m.get("iou_thres"))
 
 def extract_metric_value(res: dict, metric: str):
     thr, lat, acc, comp = (
         res.get("throughput_img_per_s", {}),
         res.get("latency_ms", {}),
-        res.get("accuracy", {}),
+        res.get("metrics", {}),
         res.get("computed", {}),
     )
-    if metric == "e2e_wall_per_image":
-        return thr.get("e2e_wall_per_image") or comp.get("e2e_wall_per_image")
-    elif metric == "e2e_active":
+    #if metric == "e2e_wall_per_image":
+    #    return thr.get("e2e_wall_per_image") or comp.get("e2e_wall_per_image")
+    #elif metric == "e2e_active":
+    if metric == "e2e_active":
         return thr.get("e2e") or thr.get("e2e_active")
     elif metric == "infer_only":
         return thr.get("infer_only")
@@ -266,11 +293,11 @@ def extract_metric_value(res: dict, metric: str):
     elif metric == "Status":
         return acc.get("status")
     elif metric == "conf":
-        return res.get("conf")
+        return acc.get("conf_thres")
     elif metric == "iou":
-        return res.get("iou")
+        return acc.get("iou_thres")
     elif metric == "sec":
-        return res.get("sec")
+        return acc.get("sec")
     return None
 
 def summarize_transposed_by_model(model: str, by_bs: Dict[int, dict]) -> str:
@@ -281,20 +308,15 @@ def summarize_transposed_by_model(model: str, by_bs: Dict[int, dict]) -> str:
     first_res = next(iter(by_bs.values()))
     conf_val, iou_val = get_conf_iou(first_res)
 
-    metrics = [
-        "e2e_wall_per_image", "e2e_active", "infer_only",
-        "lat_pre", "lat_infer", "lat_post",
-        "mAP", "Target", "Status", "sec"
-    ]
-
     rows = []
-    for metric in metrics:
-        row = [metric]
+    for metric, label in TRANSPOSED_METRICS:
+        row = [label]
         for bs in batch_sizes:
             res = by_bs[bs]
             val = extract_metric_value(res, metric)
             row.append(fmt(val) if metric != "Status" else (val or "NA"))
         rows.append("| " + " | ".join(row) + " |")
+
 
     header = ["batch_size"] + [str(bs) for bs in batch_sizes]
     table = [
@@ -315,15 +337,9 @@ def summarize_transposed_by_batch(all_results: Dict[str, Dict[int, dict]], batch
     first_res = first_model.get(batch_size, {})
     conf_val, iou_val = get_conf_iou(first_res)
 
-    metrics = [
-        "e2e_wall_per_image", "e2e_active", "infer_only",
-        "lat_pre", "lat_infer", "lat_post",
-        "mAP", "Target", "Status", "sec"
-    ]
-
     rows = []
-    for metric in metrics:
-        row = [metric]
+    for metric, label in TRANSPOSED_METRICS:
+        row = [label]
         for model in models:
             res = all_results[model].get(batch_size)
             if not res:
@@ -350,7 +366,7 @@ def summarize_transposed_by_batch(all_results: Dict[str, Dict[int, dict]], batch
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, default="data/coco.yaml")
-    parser.add_argument("--weights", type=str, default="weights/yolov9-t-converted.pt")
+    parser.add_argument("--weights", type=str, default="weights/yolov9t.pt")
     parser.add_argument("--img", type=int, default=640)
     parser.add_argument("--batch", type=int, default=32)
     parser.add_argument("--conf", type=float, default=0.025)
@@ -370,6 +386,7 @@ def main():
         return
 
     # --- Simple mode ---
+    precision_str = "f16" if opt.half else "f32"
     log_line("=" * 80)
     log_line(f"===== Simple Run started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====")
     log_line(f"Full log file: {FULL_LOG_FILE}")
@@ -383,12 +400,12 @@ def main():
     for dev_id in range(num_gpus):
         name = torch.cuda.get_device_name(dev_id)
         log_line("=" * 80)
-        log_line(f"[device {dev_id} : {name}]", both=True)
+        log_line(f"[device {dev_id} : {name}] [{precision_str}]", both=True)
         log_line("=" * 80)
         try:
             with RESULT_LOG_FILE.open("a", encoding="utf-8") as rf:
                 rf.write("=" * 80 + "\n")
-                rf.write(f"[device {dev_id} : {name}]\n")
+                rf.write(f"[device {dev_id} : {name}] [{precision_str}] \n")
                 rf.write("=" * 80 + "\n")
         except Exception:
             pass
@@ -411,9 +428,11 @@ def main():
                     res = run_e2e(o)
                     model_results[bs] = res
                     log_line(
-                        f"RESULT {model_name} bs={bs} | mAP={res['accuracy']['mAP50_95']} "
-                        f"target={res['accuracy']['target']} status={res['accuracy']['check']} | "
-                        f"conf={res['conf']} iou={res['iou']} sec={res['sec']:.2f}"
+                        f"RESULT {model_name} bs={bs} | "
+                        f"mAP={res['metrics']['mAP']} target={res['metrics']['target']} "
+                        f"status={res['metrics']['status']} | "
+                        f"conf={res['metrics']['conf_thres']} iou={res['metrics']['iou_thres']} "
+                        f"sec={res['metrics']['sec']:.2f}"
                     )
                 except Exception as e:
                     log_line(f"[WARN] Failed for {model_name} bs={bs}: {e}")
