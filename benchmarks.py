@@ -78,9 +78,9 @@ def run(
             metric, speed, raw_times = _validate_model(model_type, data, w, batch_size, imgsz, device, half)
 
             # per-image latency 리스트 모으기
-            pre_list += raw_times["pre"]
-            inf_list += raw_times["inf"]
-            nms_list += raw_times["nms"]
+            pre_list += raw_times["lat_pre"]
+            inf_list += raw_times["lat_infer"]
+            nms_list += raw_times["lat_post"]
 
             y.append([name, round(file_size(w), 1), round(metric, 4), round(speed, 2)])
 
@@ -103,11 +103,10 @@ def run(
 
     # 최종 리턴: per-image latency
     return {
-        "lat_pre": raw_times["pre"],
-        "lat_infer": raw_times["inf"],
-        "lat_post": raw_times["nms"]
+        "lat_pre": pre_list,
+        "lat_infer": inf_list,
+        "lat_post": nms_list
     }
-
 
 def test(
         weights=ROOT / 'yolo.pt',  # weights path
