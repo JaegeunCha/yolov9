@@ -38,8 +38,8 @@ FULL_LOG_FILE = LOG_DIR / f"nvidia_full_{START_TS}.log"
 RESULT_LOG_FILE = LOG_DIR / f"nvidia_result_{START_TS}.log"
 
 # 원하는 배치 조합으로 수정 가능
-BATCH_SIZES = [1, 4, 8, 16, 32]
-#BATCH_SIZES = [1]
+#BATCH_SIZES = [1, 4, 8, 16, 32]
+BATCH_SIZES = [1]
 
 TARGET_ACCURACY = {
     "yolov9t": 0.383,
@@ -141,6 +141,7 @@ def run_e2e(opt):
         save_json=True,
         name="e2e_val",
         half=opt.half,
+        save_samples=getattr(opt, "save_samples", 0),
     )
 
     mAP = results[3]
@@ -378,6 +379,12 @@ def main():
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--half", action="store_true")
     parser.add_argument(
+        "--save-samples",
+        type=int,
+        default=0,
+        help="Save N sample prediction images with boxes+labels to outputs/ (0=disable)",
+    )
+    parser.add_argument(
         "--simple",
         action="store_true",
         help="Run all GPUs, all weights, batch sizes defined in BATCH_SIZES",
@@ -401,7 +408,8 @@ def main():
     weights = list(WEIGHT_DIR.glob("*.pt"))
     all_results: Dict[str, Dict[int, dict]] = {}
 
-    for dev_id in range(num_gpus):
+    #for dev_id in range(num_gpus):
+    for dev_id in [1]:
         name = torch.cuda.get_device_name(dev_id)
         log_line("=" * 80)
         log_line(f"[device {dev_id} : {name}] [{precision_str}]", both=True)
@@ -427,7 +435,8 @@ def main():
                 o.data, o.weights, o.img = opt.data, str(w), opt.img
                 o.batch, o.conf, o.iou = bs, opt.conf, opt.iou
                 o.device, o.half = str(dev_id), opt.half
-
+                o.save_samples = opt.save_samples
+                
                 try:
                     res = run_e2e(o)
                     model_results[bs] = res

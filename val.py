@@ -24,6 +24,8 @@ from utils.metrics import ConfusionMatrix, ap_per_class, box_iou
 from utils.plots import output_to_target, plot_images, plot_val_study
 from utils.torch_utils import select_device, smart_inference_mode
 
+import random, shutil
+import cv2
 
 def save_one_txt(predn, save_conf, shape, file):
     # Save one txt result
@@ -106,7 +108,8 @@ def run(
         compute_loss=None,
         
         ##-- jgcha
-        return_raw=False    # ✅ raw latency 반환 여부
+        return_raw=False,    # ✅ raw latency 반환 여부
+        save_samples=0,
 ):
     # Initialize/load model and set device
     training = model is not None
@@ -185,6 +188,15 @@ def run(
     ##-- jgcha
     pre_ms_list, inf_ms_list, nms_ms_list = [], [], []
 
+    sample_dir = Path("outputs")
+    if save_samples > 0:
+        if sample_dir.exists():
+            shutil.rmtree(sample_dir)
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        chosen_ids = set(random.sample(range(len(dataloader.dataset)), min(save_samples, len(dataloader.dataset))))
+        sample_count = 0
+
+
     for batch_i, (im, targets, paths, shapes) in enumerate(pbar):
         callbacks.run('on_val_batch_start')
         with dt[0]:
@@ -260,6 +272,35 @@ def run(
             if save_json:
                 save_one_json(predn, jdict, path, class_map)  # append to COCO-JSON dictionary
             callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
+
+            global_index = batch_i * batch_size + si  # 0~4999
+            if save_samples > 0 and 1000 <= global_index < 1000 + save_samples:
+            #if save_samples > 0 and sample_count < save_samples:
+                out_path = sample_dir / f"{path.stem}_pred.jpg"
+                print(f"[DEBUG] Saving sample {sample_count+1}/{save_samples} to {out_path}")
+
+                # --- Tensor -> NumPy -> BGR 변환 ---
+                img = im[si].detach().cpu().numpy()   # (3,H,W), float 0~1
+                img = (img.transpose(1, 2, 0) * 255).astype(np.uint8)  # (H,W,3), uint8 RGB
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # OpenCV expects BGR
+
+                # --- 박스 + 라벨 그리기 ---
+                for *xyxy, conf, cls in predn.tolist():
+                    label = f"{names[int(cls)]} {conf:.2f}"
+                    c1 = (int(xyxy[0]), int(xyxy[1]))
+                    c2 = (int(xyxy[2]), int(xyxy[3]))
+                    cv2.rectangle(img, c1, c2, (0, 255, 0), 2)
+                    cv2.putText(img, label, (c1[0], max(c1[1]-5, 0)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+
+                # --- 저장 ---
+                try:
+                    cv2.imwrite(str(out_path), img)
+                    print(f"[DEBUG] Saved sample image to {out_path}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to save {out_path}: {e}")
+
+                sample_count += 1
 
         # Plot images
         if plots and batch_i < 3:
