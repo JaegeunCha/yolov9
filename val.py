@@ -108,8 +108,9 @@ def run(
         compute_loss=None,
         
         ##-- jgcha
-        return_raw=False,    # ✅ raw latency 반환 여부
+        return_raw=False,    # raw latency 반환 여부
         save_samples=0,
+        sample_start=1,
 ):
     # Initialize/load model and set device
     training = model is not None
@@ -156,7 +157,8 @@ def run(
             assert ncm == nc, f'{weights} ({ncm} classes) trained on different --data than what you passed ({nc} ' \
                               f'classes). Pass correct combination of --weights and --data that are trained together.'
         model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
-        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
+        #pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)  # square inference for benchmarks
+        pad, rect = (0.0, False) if task == 'speed' else (0.5, False)
         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task],
                                        imgsz,
@@ -168,8 +170,10 @@ def run(
                                        workers=workers,
                                        ##-- jgcha
                                        min_items=min_items,
+                                       shuffle=False,
                                        #min_items=opt.min_items,
                                        prefix=colorstr(f'{task}: '))[0]
+        ds = dataloader.dataset
 
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
@@ -193,7 +197,8 @@ def run(
         if sample_dir.exists():
             shutil.rmtree(sample_dir)
         sample_dir.mkdir(parents=True, exist_ok=True)
-        chosen_ids = set(random.sample(range(len(dataloader.dataset)), min(save_samples, len(dataloader.dataset))))
+        #chosen_ids = set(random.sample(range(len(dataloader.dataset)), min(save_samples, len(dataloader.dataset))))
+        chosen_ids = set(range(sample_start, sample_start + save_samples))
         sample_count = 0
 
 
@@ -273,33 +278,45 @@ def run(
                 save_one_json(predn, jdict, path, class_map)  # append to COCO-JSON dictionary
             callbacks.run('on_val_image_end', pred, predn, path, names, im[si])
 
-            global_index = batch_i * batch_size + si  # 0~4999
-            if save_samples > 0 and 1000 <= global_index < 1000 + save_samples:
-            #if save_samples > 0 and sample_count < save_samples:
+            global_index = batch_i * batch_size + si + 1  # 1~5000 (1-based)
+            if save_samples > 0 and sample_count < save_samples and global_index in chosen_ids:
                 out_path = sample_dir / f"{path.stem}_pred.jpg"
                 print(f"[DEBUG] Saving sample {sample_count+1}/{save_samples} to {out_path}")
 
-                # --- Tensor -> NumPy -> BGR 변환 ---
-                img = im[si].detach().cpu().numpy()   # (3,H,W), float 0~1
-                img = (img.transpose(1, 2, 0) * 255).astype(np.uint8)  # (H,W,3), uint8 RGB
-                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)  # OpenCV expects BGR
+                # 항상 '원본 해상도' 이미지에 그린다 (predn은 이미 native-space 좌표)
+                # paths[si]가 상대경로이면 dataset 루트와 합쳐 절대경로로 변환
+                p = Path(paths[si])
+                if not p.is_absolute():
+                    base = Path(getattr(ds, "path", ""))  # 보통 datasets/coco
+                    p = (base / p).resolve()
+                img0 = cv2.imread(str(p))  # BGR
+                if img0 is None:
+                    print(f"[WARN] cv2.imread failed: {p}  → fallback to network input (640x640)")
+                
+                # 디버그: 실제 저장 해상도 확인
+                print(f"[DEBUG] drawing on original: {p.name} shape={img0.shape}")
 
-                # --- 박스 + 라벨 그리기 ---
-                for *xyxy, conf, cls in predn.tolist():
-                    label = f"{names[int(cls)]} {conf:.2f}"
+                h0, w0 = img0.shape[:2]
+
+                detn = predn.clone().detach().cpu()
+                # 안전하게 영역 클램프
+                detn[:, 0].clamp_(0, w0 - 1); detn[:, 2].clamp_(0, w0 - 1)
+                detn[:, 1].clamp_(0, h0 - 1); detn[:, 3].clamp_(0, h0 - 1)
+
+                for *xyxy, conf, cls in detn.tolist():
                     c1 = (int(xyxy[0]), int(xyxy[1]))
                     c2 = (int(xyxy[2]), int(xyxy[3]))
-                    cv2.rectangle(img, c1, c2, (0, 255, 0), 2)
-                    cv2.putText(img, label, (c1[0], max(c1[1]-5, 0)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+                    name = names[int(cls)] if int(cls) in names else str(int(cls))
+                    label = f"{name} {conf:.2f}"
+                    cv2.rectangle(img0, c1, c2, (0, 255, 0), 2)
+                    cv2.putText(img0, label, (c1[0], max(c1[1]-5, 0)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                # --- 저장 ---
                 try:
-                    cv2.imwrite(str(out_path), img)
+                    cv2.imwrite(str(out_path), img0)
                     print(f"[DEBUG] Saved sample image to {out_path}")
                 except Exception as e:
                     print(f"[ERROR] Failed to save {out_path}: {e}")
-
                 sample_count += 1
 
         # Plot images
@@ -412,6 +429,8 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--min-items', type=int, default=0, help='Experimental')
+    parser.add_argument('--save-samples', type=int, default=0, help='Save N sample prediction images')
+    parser.add_argument('--sample-start', type=int, default=1, help='Starting dataset index (1-based) for saving samples')
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
     opt.save_json |= opt.data.endswith('coco.yaml')

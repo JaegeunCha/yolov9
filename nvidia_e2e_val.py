@@ -142,6 +142,7 @@ def run_e2e(opt):
         name="e2e_val",
         half=opt.half,
         save_samples=getattr(opt, "save_samples", 0),
+        sample_start=getattr(opt, "sample_start", 1),        
     )
 
     mAP = results[3]
@@ -385,6 +386,12 @@ def main():
         help="Save N sample prediction images with boxes+labels to outputs/ (0=disable)",
     )
     parser.add_argument(
+        "--sample-start",
+        type=int,
+        default=1,
+        help="Starting index (1-based) of dataset images to save with --save-samples",
+    )
+    parser.add_argument(
         "--simple",
         action="store_true",
         help="Run all GPUs, all weights, batch sizes defined in BATCH_SIZES",
@@ -436,7 +443,8 @@ def main():
                 o.batch, o.conf, o.iou = bs, opt.conf, opt.iou
                 o.device, o.half = str(dev_id), opt.half
                 o.save_samples = opt.save_samples
-                
+                o.sample_start = opt.sample_start
+
                 try:
                     res = run_e2e(o)
                     model_results[bs] = res
