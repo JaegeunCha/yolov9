@@ -30,8 +30,12 @@ from benchmarks import run as bench_run
 REPO_ROOT = Path.cwd()
 WEIGHT_DIR = REPO_ROOT / "weights"
 START_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
-FULL_LOG_FILE = REPO_ROOT / f"nvidia_full_{START_TS}.log"
-RESULT_LOG_FILE = REPO_ROOT / f"nvidia_result_{START_TS}.log"
+
+LOG_DIR = REPO_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+FULL_LOG_FILE = LOG_DIR / f"nvidia_full_{START_TS}.log"
+RESULT_LOG_FILE = LOG_DIR / f"nvidia_result_{START_TS}.log"
 
 # 원하는 배치 조합으로 수정 가능
 BATCH_SIZES = [1, 4, 8, 16, 32]
