@@ -192,12 +192,17 @@ def run(
     ##-- jgcha
     pre_ms_list, inf_ms_list, nms_ms_list = [], [], []
 
-    sample_dir = Path("outputs")
+    sample_dir = None
     if save_samples > 0:
+        # sample_start 유효성
+        if sample_start < 1:
+            raise ValueError("--sample-start must be >=1 when --save-samples > 0")
+        # 모델명/배치사이즈 기반 디렉토리
+        model_name = Path(weights[0] if isinstance(weights, list) else weights).stem
+        sample_dir = Path("outputs") / f"{model_name}_{batch_size}"
         if sample_dir.exists():
             shutil.rmtree(sample_dir)
         sample_dir.mkdir(parents=True, exist_ok=True)
-        #chosen_ids = set(random.sample(range(len(dataloader.dataset)), min(save_samples, len(dataloader.dataset))))
         chosen_ids = set(range(sample_start, sample_start + save_samples))
         sample_count = 0
 
@@ -281,7 +286,7 @@ def run(
             global_index = batch_i * batch_size + si + 1  # 1~5000 (1-based)
             if save_samples > 0 and sample_count < save_samples and global_index in chosen_ids:
                 out_path = sample_dir / f"{path.stem}_pred.jpg"
-                print(f"[DEBUG] Saving sample {sample_count+1}/{save_samples} to {out_path}")
+                #print(f"[DEBUG] Saving sample {sample_count+1}/{save_samples} to {out_path}")
 
                 # 항상 '원본 해상도' 이미지에 그린다 (predn은 이미 native-space 좌표)
                 # paths[si]가 상대경로이면 dataset 루트와 합쳐 절대경로로 변환
@@ -294,7 +299,7 @@ def run(
                     print(f"[WARN] cv2.imread failed: {p}  → fallback to network input (640x640)")
                 
                 # 디버그: 실제 저장 해상도 확인
-                print(f"[DEBUG] drawing on original: {p.name} shape={img0.shape}")
+                #print(f"[DEBUG] drawing on original: {p.name} shape={img0.shape}")
 
                 h0, w0 = img0.shape[:2]
 
@@ -314,7 +319,7 @@ def run(
 
                 try:
                     cv2.imwrite(str(out_path), img0)
-                    print(f"[DEBUG] Saved sample image to {out_path}")
+                    #print(f"[DEBUG] Saved sample image to {out_path}")
                 except Exception as e:
                     print(f"[ERROR] Failed to save {out_path}: {e}")
                 sample_count += 1
@@ -430,7 +435,9 @@ def parse_opt():
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--min-items', type=int, default=0, help='Experimental')
     parser.add_argument('--save-samples', type=int, default=0, help='Save N sample prediction images')
-    parser.add_argument('--sample-start', type=int, default=1, help='Starting dataset index (1-based) for saving samples')
+    parser.add_argument('--sample-start', type=int, default=None,
+                        help='Starting dataset index (1-based) for saving samples. '
+                             'Valid only if --save-samples > 0')
     opt = parser.parse_args()
     opt.data = check_yaml(opt.data)  # check YAML
     opt.save_json |= opt.data.endswith('coco.yaml')

@@ -38,8 +38,8 @@ FULL_LOG_FILE = LOG_DIR / f"nvidia_full_{START_TS}.log"
 RESULT_LOG_FILE = LOG_DIR / f"nvidia_result_{START_TS}.log"
 
 # 원하는 배치 조합으로 수정 가능
-#BATCH_SIZES = [1, 4, 8, 16, 32]
-BATCH_SIZES = [1]
+BATCH_SIZES = [1, 4, 8, 16, 32]
+#BATCH_SIZES = [1]
 
 TARGET_ACCURACY = {
     "yolov9t": 0.383,
@@ -139,10 +139,11 @@ def run_e2e(opt):
         iou_thres=opt.iou,
         device=opt.device,
         save_json=True,
-        name="e2e_val",
+        name=f"{Path(opt.weights).stem}_{opt.batch}",
         half=opt.half,
         save_samples=getattr(opt, "save_samples", 0),
-        sample_start=getattr(opt, "sample_start", 1),        
+        sample_start=(getattr(opt, "sample_start", None)
+                      if getattr(opt, "save_samples", 0) > 0 else None),
     )
 
     mAP = results[3]
@@ -388,8 +389,9 @@ def main():
     parser.add_argument(
         "--sample-start",
         type=int,
-        default=1,
-        help="Starting index (1-based) of dataset images to save with --save-samples",
+        default=None,
+        help="Starting index (1-based) of dataset images to save with --save-samples. "
+             "Ignored if --save-samples=0",
     )
     parser.add_argument(
         "--simple",
@@ -415,8 +417,8 @@ def main():
     weights = list(WEIGHT_DIR.glob("*.pt"))
     all_results: Dict[str, Dict[int, dict]] = {}
 
-    #for dev_id in range(num_gpus):
-    for dev_id in [1]:
+    for dev_id in range(num_gpus):
+    #for dev_id in [1]:
         name = torch.cuda.get_device_name(dev_id)
         log_line("=" * 80)
         log_line(f"[device {dev_id} : {name}] [{precision_str}]", both=True)
@@ -443,7 +445,7 @@ def main():
                 o.batch, o.conf, o.iou = bs, opt.conf, opt.iou
                 o.device, o.half = str(dev_id), opt.half
                 o.save_samples = opt.save_samples
-                o.sample_start = opt.sample_start
+                o.sample_start = opt.sample_start if opt.save_samples > 0 else None
 
                 try:
                     res = run_e2e(o)
