@@ -9,3 +9,7 @@ __pycache__/
 
 # outputs
 outputs/
+
+# generated artifacts
+runs/
+weights/*.pt
