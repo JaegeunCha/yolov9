@@ -1,8 +1,11 @@
-./runs/val
-./runs/val/* 
-*.log
+# runs
 runs/val/
-__pycache__/*
+*.log
+
+# python cache
 __pycache__/
-__pycache__
+**/__pycache__/
+*.pyc
+
+# outputs
 outputs/
