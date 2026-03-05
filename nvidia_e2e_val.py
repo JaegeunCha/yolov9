@@ -14,7 +14,11 @@ Notes
 - Device header is written to both full and result logs.
 """
 
-import argparse, json, os, sys, time, re
+import argparse
+import json
+import time
+
+
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
@@ -38,8 +42,8 @@ FULL_LOG_FILE = LOG_DIR / f"nvidia_full_{START_TS}.log"
 RESULT_LOG_FILE = LOG_DIR / f"nvidia_result_{START_TS}.log"
 
 # 원하는 배치 조합으로 수정 가능
-BATCH_SIZES = [1, 4, 8, 16, 32]
-#BATCH_SIZES = [1]
+#BATCH_SIZES = [1, 4, 8, 16, 32]
+BATCH_SIZES = [1]
 
 TARGET_ACCURACY = {
     "yolov9t": 0.383,
@@ -64,7 +68,7 @@ TRANSPOSED_METRICS = [
     ("mAP", "mAP"),
     ("Target", "Target"),
     ("Status", "Status"),
-    ("sec", "sec (s)"),
+    #("sec", "sec (s)"),
 ]
 
 
@@ -117,20 +121,38 @@ def quantiles(arr):
 def run_e2e(opt):
     start = time.time()
 
-    # 1) 마이크로 벤치(프리/인퍼/포스트 ms 리스트)
-    lat_dict = bench_run(
-        data=opt.data,
-        weights=opt.weights,
-        batch_size=opt.batch,
-        imgsz=opt.img,
-        device=opt.device,
-        pt_only=True,
-        half=opt.half,
-    )
-    e2e_ms_list = [p + i + n for p, i, n in zip(lat_dict["lat_pre"], lat_dict["lat_infer"], lat_dict["lat_post"])]
+    # # 1) 마이크로 벤치(프리/인퍼/포스트 ms 리스트)
+    # lat_dict = bench_run(
+    #     data=opt.data,
+    #     weights=opt.weights,
+    #     batch_size=opt.batch,
+    #     imgsz=opt.img,
+    #     device=opt.device,
+    #     pt_only=True,
+    #     half=opt.half,
+    # )
+    # e2e_ms_list = [p + i + n for p, i, n in zip(lat_dict["lat_pre"], lat_dict["lat_infer"], lat_dict["lat_post"])]
+# 
+    # 
+    # # 2) 정확도(mAP) 측정
+    # results, maps, _ = val_run(
+    #     data=opt.data,
+    #     weights=opt.weights,
+    #     batch_size=opt.batch,
+    #     imgsz=opt.img,
+    #     conf_thres=opt.conf,
+    #     iou_thres=opt.iou,
+    #     device=opt.device,
+    #     save_json=True,
+    #     name=f"{Path(opt.weights).stem}_{opt.batch}",
+    #     half=opt.half,
+    #     save_samples=getattr(opt, "save_samples", 0),
+    #     sample_start=(getattr(opt, "sample_start", None)
+    #                   if getattr(opt, "save_samples", 0) > 0 else None),
+    # )
 
-    # 2) 정확도(mAP) 측정
-    results, maps, _ = val_run(
+    # 1) val 1회로 mAP + latency(raw) 같이 얻기
+    results, maps, _, raw = val_run(
         data=opt.data,
         weights=opt.weights,
         batch_size=opt.batch,
@@ -141,10 +163,14 @@ def run_e2e(opt):
         save_json=True,
         name=f"{Path(opt.weights).stem}_{opt.batch}",
         half=opt.half,
+        return_raw=True,  # ★ 추가
         save_samples=getattr(opt, "save_samples", 0),
         sample_start=(getattr(opt, "sample_start", None)
                       if getattr(opt, "save_samples", 0) > 0 else None),
     )
+
+    lat_dict = raw  # {"lat_pre": [...], "lat_infer": [...], "lat_post": [...]}
+    e2e_ms_list = [p + i + n for p, i, n in zip(lat_dict["lat_pre"], lat_dict["lat_infer"], lat_dict["lat_post"])]
 
     mAP = results[3]
     model_name = Path(opt.weights).stem.replace("-converted", "").replace("-", "")
@@ -182,7 +208,7 @@ def run_e2e(opt):
             "status": acc_check,
             "conf_thres": opt.conf,
             "iou_thres": opt.iou,
-            "sec": time.time() - start,
+            #"sec": time.time() - start,
         }
     }
 
@@ -197,7 +223,7 @@ def run_e2e(opt):
         f"mAP={summary['metrics']['mAP']} target={summary['metrics']['target']} "
         f"status={summary['metrics']['status']} | "
         f"conf={summary['metrics']['conf_thres']} iou={summary['metrics']['iou_thres']} "
-        f"sec={summary['metrics']['sec']:.2f}"
+        #f"sec={summary['metrics']['sec']:.2f}"
     )
 
     # 콘솔에도 JSON 한 번 출력(디버깅 가독성)
@@ -217,8 +243,10 @@ def summarize_by_model(model: str, by_bs: Dict[int, dict]) -> str:
     header = f"[model : {model}] : conf ({conf}), iou ({iou})"
     table = [
         #"| batch_size | e2e_wall_per_image (img/s) | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
-        "| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
-        "|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|---------|",
+        #"| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
+        #"|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|---------|",
+        "| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status |",
+        "|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|",
     ]
     for bs in sorted(by_bs.keys()):
         r = by_bs[bs]
@@ -230,7 +258,8 @@ def summarize_by_model(model: str, by_bs: Dict[int, dict]) -> str:
             f"| {bs} | "
             f"{fmt(thr.get('e2e_active'))} | {fmt(thr.get('infer_only'))} | "
             f"{fmt(lat['pre']['avg'])} | {fmt(lat['infer']['avg'])} | {fmt(lat['post']['avg'])} | "
-            f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
+            #f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
+            f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} |"
         )
     return "\n".join([header, ""] + table + [""])
 
@@ -247,8 +276,10 @@ def summarize_by_batch(batch: int, all_results: Dict[str, Dict[int, dict]]) -> s
     header = f"[batch_size : {batch}] : conf ({conf_val}), iou ({iou_val})"
     table = [
         #"| batch_size | e2e_wall_per_image (img/s) | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
-        "| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
-        "|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|---------|",
+        #"| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status | sec (s) |",
+        #"|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|---------|",
+        "| batch_size | e2e_active (img/s) | infer_only (img/s) | lat_pre (ms) | lat_infer (ms) | lat_post (ms) | mAP | Target | Status |",
+        "|------------|--------------------|--------------------|--------------|----------------|---------------|-----|--------|--------|",
     ]
     for model, bs_dict in all_results.items():
         if batch not in bs_dict:
@@ -262,7 +293,8 @@ def summarize_by_batch(batch: int, all_results: Dict[str, Dict[int, dict]]) -> s
             f"| {model} | "
             f"{fmt(thr.get('e2e_active'))} | {fmt(thr.get('infer_only'))} | "
             f"{fmt(lat['pre']['avg'])} | {fmt(lat['infer']['avg'])} | {fmt(lat['post']['avg'])} | "
-            f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
+            #f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} | {fmt(acc['sec'])} |"
+            f"{fmt(acc['mAP'])} | {fmt(acc['target'])} | {acc['status']} |"
         )
     return "\n".join([header, ""] + table + [""])
 
@@ -303,8 +335,8 @@ def extract_metric_value(res: dict, metric: str):
         return acc.get("conf_thres")
     elif metric == "iou":
         return acc.get("iou_thres")
-    elif metric == "sec":
-        return acc.get("sec")
+    #elif metric == "sec":
+    #    return acc.get("sec")
     return None
 
 def summarize_transposed_by_model(model: str, by_bs: Dict[int, dict]) -> str:
@@ -367,6 +399,9 @@ def summarize_transposed_by_batch(all_results: Dict[str, Dict[int, dict]], batch
 
 
 
+
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -413,13 +448,18 @@ def main():
     log_line(f"Result log file: {RESULT_LOG_FILE}")
     log_line("=" * 80)
 
-    num_gpus = torch.cuda.device_count()
+    #num_gpus = torch.cuda.device_count()
     weights = list(WEIGHT_DIR.glob("*.pt"))
     all_results: Dict[str, Dict[int, dict]] = {}
 
-    for dev_id in range(num_gpus):
+    #for dev_id in range(num_gpus):   
     #for dev_id in [1]:
-        name = torch.cuda.get_device_name(dev_id)
+    
+    dev_ids = [int(opt.device)] if opt.device else list(range(torch.cuda.device_count()))
+    for dev_id in dev_ids:
+        import os
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(dev_id)
+        name = torch.cuda.get_device_name(0)
         log_line("=" * 80)
         log_line(f"[device {dev_id} : {name}] [{precision_str}]", both=True)
         log_line("=" * 80)
@@ -442,8 +482,9 @@ def main():
 
                 o = Opt()
                 o.data, o.weights, o.img = opt.data, str(w), opt.img
-                o.batch, o.conf, o.iou = bs, opt.conf, opt.iou
+                o.batch, o.conf, o.iou = bs, opt.conf, opt.iou             
                 o.device, o.half = str(dev_id), opt.half
+
                 o.save_samples = opt.save_samples
                 o.sample_start = opt.sample_start if opt.save_samples > 0 else None
 
@@ -455,7 +496,7 @@ def main():
                         f"mAP={res['metrics']['mAP']} target={res['metrics']['target']} "
                         f"status={res['metrics']['status']} | "
                         f"conf={res['metrics']['conf_thres']} iou={res['metrics']['iou_thres']} "
-                        f"sec={res['metrics']['sec']:.2f}"
+                        #f"sec={res['metrics']['sec']:.2f}"
                     )
                 except Exception as e:
                     log_line(f"[WARN] Failed for {model_name} bs={bs}: {e}")
@@ -469,20 +510,20 @@ def main():
                         rf.write(summary + "\n\n")
                 except Exception:
                     pass
-                print(summary)
+                #print(summary)
 
                 summary_t = summarize_transposed_by_model(model_name, model_results)
                 log_line("\n" + summary_t)
                 with RESULT_LOG_FILE.open("a", encoding="utf-8") as rf:
                     rf.write(summary_t + "\n\n")
-                print(summary_t)
+                #print(summary_t)
 
         # batch별 요약(모든 모델 누적 기준)
         batch_sizes_present = sorted({bs for m in all_results.values() for bs in m.keys()})
         for bs in batch_sizes_present:
             summary = summarize_by_batch(bs, all_results)
             log_line("\n" + summary)
-            print(summary)
+            #print(summary)
             try:
                 with RESULT_LOG_FILE.open("a", encoding="utf-8") as rf:
                     rf.write(summary + "\n\n")
@@ -492,7 +533,7 @@ def main():
             # transpose 요약 추가
             summary_t = summarize_transposed_by_batch(all_results, bs)
             log_line("\n" + summary_t)
-            print(summary_t)
+            #print(summary_t)
             try:
                 with RESULT_LOG_FILE.open("a", encoding="utf-8") as rf:
                     rf.write(summary_t + "\n\n")
